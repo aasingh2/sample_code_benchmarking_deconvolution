@@ -1,0 +1,312 @@
+---
+title: "Bootstapping"
+author: "Aakanksha Singh"
+date: "2022-09-14"
+output: html_document
+---
+
+```{r}
+source("functions/library_loading.R")
+source("functions/processing_sce.R")
+source("functions/Generating_a_pseudobulk_sample.R")
+source("functions/Spotlight_deconv.R")
+source("functions/spatial_deconv.R")
+source("functions/updated_spatial_deconv.R")
+source("functions/bootstrapping_with_subsampling.R")
+source("functions/bootstrapping_without_subsampling.R")
+```
+
+## Reading data, Annotating cell types and saving it (Only to be done once)
+
+```{r}
+pbmc8k<-processing_sce(TENxPBMCData("pbmc8k"),"pbmc8k")
+saveRDS(pbmc8k, file = "data/pbmc8k.rds")
+
+pbmc6k<-processing_sce(TENxPBMCData("pbmc6k"),"pbmc6k")
+saveRDS(pbmc6k, file = "data/pbmc6k.rds")
+
+liver<-processing_sce(ZhaoImmuneLiverData(),"liver")
+saveRDS(liver, file = "data/liver.rds")
+```
+
+## Loading the Data
+
+```{r}
+pbmc6k <- readRDS("data/pbmc6k.rds")
+cell_count_pbmc6k <- as.data.frame(table(pbmc6k$cell))
+
+pbmc8k <- readRDS("data/pbmc8k.rds")
+cell_count_pbmc8k <- as.data.frame(table(pbmc8k$cell))
+
+liver <- readRDS("data/liver.rds")
+cell_count_liver <- as.data.frame(table(liver$cell))
+
+signature_reference <- readRDS("data/pbmc6k.rds")
+
+```
+
+## Gene List from the three technologies
+```{r}
+
+BD_genes <- read.delim("Data/cDNA_BD_Kit.txt", header = FALSE) 
+tenX_genes <-read.delim("Data/Visium_gene_list.txt", header = FALSE)
+nanostring_genes <- read.delim("Data/Nanostring_WTA_q3_gene_list.txt", header = FALSE)
+```
+
+
+## Bootstrapping
+
+```{r}
+gene_list <- nanostring_genes # Depends on which gene panel you want to run
+
+final_table <-data.frame()
+for (i in 1:30)
+
+{
+  ## PBMC6k Dataset
+pbmc6k_cell_table <-data.frame("cell_type"= c ("B cell","Monocyte","NK cell","T cell")) %>% 
+                    left_join(cell_count_pbmc6k, by = c("cell_type" = "Var1")) %>% rowwise() %>% 
+                    mutate(inDeconv = as.integer(runif(1,min=10,max = Freq))) %>%  as.data.frame()
+
+pbmc6k_cell_table <- pbmc6k_cell_table %>% mutate(inDeconv_Frac = inDeconv/sum(inDeconv))
+
+pbmc6k_for_loop<- generating_matrix_for_deconv(pbmc6k[rowData(pbmc6k)$Symbol %in% gene_list$V1,],"pbmc6k",pbmc6k_cell_table[1,1],pbmc6k_cell_table[1,3],
+                                      pbmc6k_cell_table[2,1],pbmc6k_cell_table[2,3],
+                                      pbmc6k_cell_table[3,1],pbmc6k_cell_table[3,3],
+                                      pbmc6k_cell_table[4,1],pbmc6k_cell_table[4,3])
+
+## PBMC8K Dataset
+
+pbmc8k_cell_table <-data.frame("cell_type"= c ("B cell","Monocyte","NK cell","T cell")) %>% 
+                    left_join(cell_count_pbmc8k, by = c("cell_type" = "Var1")) %>% rowwise() %>% 
+                    mutate(inDeconv = as.integer(runif(1,min=10,max=Freq))) %>% as.data.frame()
+
+pbmc8k_cell_table <- pbmc8k_cell_table %>% mutate(inDeconv_Frac = inDeconv/sum(inDeconv))
+
+pbmc8k_for_loop<- generating_matrix_for_deconv(pbmc8k[rowData(pbmc8k)$Symbol %in% gene_list$V1,],"pbmc8k",pbmc8k_cell_table[1,1],pbmc8k_cell_table[1,3],
+                                      pbmc8k_cell_table[2,1],pbmc8k_cell_table[2,3],
+                                      pbmc8k_cell_table[3,1],pbmc8k_cell_table[3,3],
+                                      pbmc8k_cell_table[4,1],pbmc8k_cell_table[4,3])
+
+## Immune liver Dataset
+liver_cell_table <-data.frame("cell_type"= c ("B cell","Monocyte","NK cell","T cell")) %>% 
+                    left_join(cell_count_liver, by = c("cell_type" = "Var1")) %>% rowwise() %>% 
+                    mutate(inDeconv = as.integer(runif(1,min=10,max=Freq))) %>% as.data.frame()
+liver_cell_table <- liver_cell_table %>% mutate(inDeconv_Frac = inDeconv/sum(inDeconv))
+
+liver_for_loop<- generating_matrix_for_deconv(liver[rowData(liver)$Symbol %in% gene_list$V1,],"liver",liver_cell_table[1,1],liver_cell_table[1,3],
+                                      liver_cell_table[2,1],liver_cell_table[2,3],
+                                      liver_cell_table[3,1],liver_cell_table[3,3],
+                                      liver_cell_table[4,1],liver_cell_table[4,3])
+
+## Merging to make a pseudobulk dataset
+deconv_table<- merge(liver_for_loop,pbmc8k_for_loop,by.x="HUGO",by.y="HUGO", all=TRUE) %>% merge(pbmc6k_for_loop,by="HUGO",all=TRUE)
+
+result <-bootstrapping_without_subsampling(deconv_table)
+
+result$bootstrap_run=i
+
+final_table <- rbind(final_table,result) 
+
+print(paste0(i,"/30 of the Bootstrap done"))
+
+rm(pbmc6k_for_loop,pbmc8k_for_loop,liver_for_loop,deconv_table)
+
+}
+                                  
+```
+
+## Data wrangling for plotting
+```{r}
+
+cell_deconvolutions <- final_table
+
+pb6k<-cell_deconvolutions[,!names(cell_deconvolutions) %in% c("pbmc8k_TPM","liver_TPM","pbmc8k_actual","liver_actual")] %>% mutate("Dataset"="pbmc6k") %>% rename("Predicted_values"="pbmc6k_TPM","True_values"="pbmc6k_actual")
+
+pb8k <- cell_deconvolutions[,!names(cell_deconvolutions) %in% c("pbmc6k_TPM","liver_TPM","pbmc6k_actual","liver_actual")] %>% mutate("Dataset"="pbmc8k") %>% rename("Predicted_values"="pbmc8k_TPM","True_values"="pbmc8k_actual")
+
+liv <- cell_deconvolutions[,!names(cell_deconvolutions) %in% c("pbmc8k_TPM","pbmc6k_TPM","pbmc8k_actual","pbmc6k_actual")] %>% mutate("Dataset"="Liver") %>% rename("Predicted_values"="liver_TPM","True_values"="liver_actual")
+
+cell_deconvolutions_for_plotting=rbind(pb6k,pb8k,liv)
+
+cell_deconvolutions_for_plotting2 = cell_deconvolutions_for_plotting %>% mutate(cell_type=ifelse(cell_type=="Macropahge","Macrophage",cell_type))
+
+
+```
+
+# Results with all the gene panels
+```{r}
+BD_result = cell_deconvolutions_for_plotting2
+tenx_results = cell_deconvolutions_for_plotting2
+nanostring_results= cell_deconvolutions_for_plotting2
+
+```
+
+# Quantitative Plots
+```{r}
+deconv_type_plots <- function(cell_deconvolutions_for_plotting,deconv_method, plot_title)
+{
+  nb.cols <- 18
+  mycolors <- colorRampPalette(brewer.pal(11, "Set3"))(nb.cols)
+  
+  cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type==deconv_method) %>% 
+  ggplot(aes(x=(True_values),y=(Predicted_values), color,group=cell_type)) + geom_point(aes( color=cell_type), size=3) +
+    scale_color_manual (values = c ( "B cell"  =  "#8DD3C7" , "Macrophage"  =  "#FFFFB3","Monocyte"  =  "#BEBADA", "Neutrophil"  =  "#FB8072", "NK cell"  =  "#80B1D3" , "T cell"  =  "#FDB462" ,"Myeloid dendritic cell"  =  "#B3DE69" ,      "uncharacterized cell"  =  "#FCCDE5",  "cytotoxicity score"  =  "#C9B4A7" , "Macrophage/Monocyte"  =  "#D9D9D9",       "Endothelial cell"  =  "#BC80BD" ,  "Cancer associated fibroblast"  =  "#CCEBC5" ,"Progenitor" = "#573F94","Dendritic cell" = "#B3DE69", "Mast cell"="#E6B9A1","Plasma cell"="#E6E6CA","Fibroblast cell"="#CCEBC5")) +
+    geom_smooth(method = "lm", formula = y~x, col = "black") +
+    scale_shape_manual(values=c(0,1,2,3, 16, 17,11,4,8))  + ggtitle(plot_title) + theme(plot.title = element_text(hjust = 0.5)) +   
+    theme(axis.text.y   = element_text(size=14),
+          axis.text.x   = element_text(size=14),
+          axis.title.y  = element_text(size=14),
+          axis.title.x  = element_text(size=14),
+          panel.background = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          axis.line = element_line(colour = "black"),
+          panel.border = element_rect(colour = "black", fill=NA, size=1)) +                                                                                                                                      
+    xlab("Actual proportions") +
+    ylab("Predicted proportions")
+}
+
+```
+
+
+## Qualitative plots
+```{r}
+write.csv(tenx_results,"Data/Bootstrap_data/tenx_genes_boot_050523.csv")
+write.csv(BD_result,"Data/Bootstrap_data/bd_genes_boot_050523.csv")
+write.csv(nanostring_results,"Data/Bootstrap_data/nanostring_genes_boot_050523.csv")
+
+tenx_results=read.csv("Data/Bootstrap_data/tenx_genes_boot_050523.csv")
+BD_result=read.csv("Data/Bootstrap_data/bd_genes_boot_050523.csv")
+nanostring_results=read.csv("Data/Bootstrap_data/nanostring_genes_boot_050523.csv")
+
+bd_graphs <- ggarrange(
+  deconv_type_plots(BD_result,"Quantiseq", "BD Quantiseq"),
+  deconv_type_plots(BD_result,"EPIC", "BD Epic"),
+  deconv_type_plots(BD_result,"MCP", "BD MCP"),
+  deconv_type_plots(BD_result,"Spotlight", "BD Spotlight"),
+  deconv_type_plots(BD_result,"Spatial_deconv_cus", "BD Spatial Decon ( custom signature 8k)"),
+  deconv_type_plots(BD_result,"Spatial_deconv_tme", "BD Spatial Decon (TME signature)"),
+  widths=c(1,1,1,1,1,1), align="v", nrow =6, ncol=1,common.legend = TRUE, legend = "top")
+  
+  Tenx_graphs <- ggarrange(
+  deconv_type_plots(tenx_results,"Quantiseq", "10X Quantiseq"),
+  deconv_type_plots(tenx_results,"EPIC", "10X Epic"),
+  deconv_type_plots(tenx_results,"MCP", "10X MCP"),
+  deconv_type_plots(tenx_results,"Spotlight", "10X Spotlight"),
+  deconv_type_plots(tenx_results,"Spatial_deconv_cus", "10X Spatial Decon ( custom signature 8k)"),
+  deconv_type_plots(tenx_results,"Spatial_deconv_tme", "10X Spatial Decon (TME signature)"),
+  widths=c(1,1,1,1,1,1), align="v", nrow =6, ncol=1,legend = "top", common.legend = TRUE)
+
+  nanostring_graphs<- ggarrange(
+  deconv_type_plots(nanostring_results,"Quantiseq", "NS Quantiseq"),
+  deconv_type_plots(nanostring_results,"EPIC", "NS Epic"),
+  deconv_type_plots(nanostring_results,"MCP", "NS MCP"),
+  deconv_type_plots(nanostring_results,"Spotlight", "NS Spotlight"),
+  deconv_type_plots(nanostring_results,"Spatial_deconv_cus", "NS Spatial Decon ( custom signature 8k)"),
+  deconv_type_plots(nanostring_results,"Spatial_deconv_tme", "NS Spatial Decon (TME signature)"),
+  widths=c(1,1,1,1,1,1), align="v", nrow =6, ncol=1,common.legend = TRUE,legend = "top")
+
+
+
+quantitative_graphs <- ggarrange(
+  bd_graphs,Tenx_graphs,nanostring_graphs,
+  widths = c(1,1,1), align = "h", nrow=1, ncol = 3, common.legend = TRUE, legend = "top"
+)
+
+pdf("Results/Bootstrapped_graphs/NS_BD_tenx_050523.pdf", height = 25, width = 15,onefile = TRUE)
+quantitative_graphs
+dev.off()
+
+pl1=deconv_type_plots(tenx_results,"Quantiseq", "10X Quantiseq")
+  pl2=deconv_type_plots(tenx_results,"EPIC", "10X Epic")
+  pl3=deconv_type_plots(tenx_results,"MCP", "10X MCP")
+  pl4=deconv_type_plots(tenx_results,"Spotlight", "10X Spotlight")
+  pl5=deconv_type_plots(tenx_results,"Spatial_deconv_cus", "10X Spatial Decon ( custom signature 8k)")
+  pl6=deconv_type_plots(tenx_results,"Spatial_deconv_tme", "10X Spatial Decon (TME signature)")
+  
+  
+
+  library(patchwork)
+combined <- pl1 + pl2 +pl3+ pl4 +pl5+pl6 & theme(legend.position = "bottom")
+
+pdf("Results/Bootstrapped_graphs/tenx_plots.pdf", width = 30, height = 4, onefile = TRUE)
+combined + plot_layout(guides = "collect")
+dev.off()
+
+unique(tenx_results$cell_type)
+
+```
+
+## Rearranging Plots
+```{r}
+bd_graphs <- ggarrange(
+  deconv_type_plots(BD_result,"Quantiseq", "BD Quantiseq")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(BD_result,"EPIC", "BD Epic")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(BD_result,"MCP", "BD MCP")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(BD_result,"Spotlight", "BD Spotlight")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(BD_result,"Spatial_deconv_cus", "BD Spatial Decon (custom signature 8k)")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(BD_result,"Spatial_deconv_tme", "BD Spatial Decon (TME signature)")+ rremove("ylab") + rremove("xlab"),
+  widths=c(1,1,1,1,1,1), align="h", nrow =1, ncol=6, legend = "none")
+  
+  Tenx_graphs <- ggarrange(
+  deconv_type_plots(tenx_results,"Quantiseq", "10X Quantiseq")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(tenx_results,"EPIC", "10X Epic")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(tenx_results,"MCP", "10X MCP")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(tenx_results,"Spotlight", "10X Spotlight")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(tenx_results,"Spatial_deconv_cus", "10X Spatial Decon ( custom signature 8k)")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(tenx_results,"Spatial_deconv_tme", "10X Spatial Decon (TME signature)")+ rremove("ylab") + rremove("xlab"),
+  widths=c(1,1,1,1,1,1), align="h", nrow =1, ncol=6,legend = "none")
+
+  nanostring_graphs<- ggarrange(
+  deconv_type_plots(nanostring_results,"Quantiseq", "NS Quantiseq")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(nanostring_results,"EPIC", "NS Epic")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(nanostring_results,"MCP", "NS MCP")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(nanostring_results,"Spotlight", "NS Spotlight")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(nanostring_results,"Spatial_deconv_cus", "NS Spatial Decon ( custom signature 8k)")+ rremove("ylab") + rremove("xlab"),
+  deconv_type_plots(nanostring_results,"Spatial_deconv_tme", "NS Spatial Decon (TME signature)")+ rremove("ylab") + rremove("xlab"),
+  widths=c(1,1,1,1,1,1), align="h", nrow =1, ncol=6,legend = "none")
+
+
+
+quantitative_graphs <- ggarrange(
+  bd_graphs,Tenx_graphs,nanostring_graphs,
+  widths = c(1,1,1), align = "v", nrow=3, ncol = 1, legend = "none"
+)
+
+pdf("Results/Bootstrapped_graphs/NS_BD_tenx_050523_rearranged.pdf", height = 26, width = 38,onefile = TRUE)
+quantitative_graphs
+dev.off()
+
+## Generating all legends
+
+legend_df=data_frame(x=runif(17,1,100),
+           y=runif(17,1,100),
+           cell_type = c( "B cell"  , "Macrophage","Monocyte", "Neutrophil", "NK cell", "T cell","Myeloid dendritic cell" ,"uncharacterized cell",  "cytotoxicity score", "Macrophage/Monocyte","Endothelial cell",  "Cancer associated fibroblast","Progenitor" ,"Dendritic cell", "Mast cell","Plasma cell","Fibroblast cell")) 
+    
+
+legend_plot=legend_df %>% ggplot(aes(x, y, color = cell_type))+
+  geom_point(alpha=0, shape = 0)+
+  geom_point()+# completely transparent rectangular point 
+  scale_color_manual (values = c ( "B cell"  =  "#8DD3C7" , "Macrophage"  =  "#FFFFB3","Monocyte"  =  "#BEBADA", "Neutrophil"  =  "#FB8072", "NK cell"  =  "#80B1D3" , "T cell"  =  "#FDB462" ,"Myeloid dendritic cell"  =  "#B3DE69" ,      "uncharacterized cell"  =  "#FCCDE5",  "cytotoxicity score"  =  "#C9B4A7" , "Macrophage/Monocyte"  =  "#D9D9D9",       "Endothelial cell"  =  "#BC80BD" ,  "Cancer associated fibroblast"  =  "#CCEBC5" ,"Progenitor" = "#573F94","Dendritic cell" = "#B3DE69", "Mast cell"="#E6B9A1","Plasma cell"="#E6E6CA","Fibroblast cell"="#CCEBC5"))+ scale_shape_manual(values=c(0,1,2,3, 16, 17,11,4,8))+
+  guides(color = guide_legend(order=0,nrow = 2,byrow = TRUE,override.aes = list(alpha=1, size = 15)))+ # showing the point in the legend
+  theme(axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = "bottom", # move the legend to the center
+        legend.title = element_blank(),
+        legend.text = element_text(size = 25),
+        legend.key = element_rect(fill='NA'),
+        panel.grid = element_blank(),
+        panel.border = element_rect( colour = "black", fill= 'NA',size=1),
+        
+  )
+
+
+pdf("Results/Bootstrapped_graphs/legend_color.pdf", height = 30, width = 38,onefile = TRUE)
+legend_plot
+dev.off()
+
+```
+
+

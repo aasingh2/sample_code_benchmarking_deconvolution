@@ -1,0 +1,338 @@
+---
+title: "Analysis"
+author: "Aakanksha Singh"
+date: "2022-08-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Sourcing the Required Files
+
+```{r}
+source("library_loading.R")
+source("processing_sce.R")
+source("Generating_a_pseudobulk_sample.R")
+source("Spotlight_deconv.R")
+source("spatial_deconv.R")
+```
+
+## Data loading
+```{r}
+pbmc6k<- generating_matrix_for_deconv(processing_sce(TENxPBMCData("pbmc6k"),"pbmc6k"),"pbmc6k","B cells",680,"Monocytes",1000,"NK cells",320,"T cells",2000)
+pbmc8k<-generating_matrix_for_deconv(processing_sce(TENxPBMCData("pbmc8k"),"pbmc8k"),"pbmc8k","B cells",1000,"Monocytes",1000,"NK cells",300,"T cells",2300)
+liver<-generating_matrix_for_deconv(processing_sce(ZhaoImmuneLiverData(),"liver"),"liver","B cells",8000,"Monocytes",8000,"NK cells",4000,"T cells",20000)
+signature_reference<-processing_sce(TENxPBMCData("pbmc8k"),"pbmc8k")
+saveRDS(signature_reference,"Data/signature_reference")
+```
+
+## Reading data from saved files
+```{r}
+pbmc6k <-readRDS("Data/pbmc6k")
+pbmc8k <- readRDS("Data/pbmc8k")
+liver <- readRDS("Data/liver")
+signature_reference <- readRDS("Data/signature_reference")
+```
+
+## Merging the data to create a pseubullk experiment with 3 samples
+```{r}
+deconv_table<- merge(liver,pbmc8k,by.x="HUGO",by.y="HUGO", all=TRUE) %>% merge(pbmc6k,by="HUGO",all=TRUE)
+```
+
+## BD gene list
+```{r}
+BD_genes <- read.delim("../../../cDNA_BD_Kit.txt", header = FALSE)
+sample1<-deconv_table[deconv_table$HUGO %in% BD_genes$V1,] # 419 genes
+```
+
+## 10X Genomics gene list
+```{r}
+tenX_genes <-read.delim("Data/Visium_gene_list.txt", header = FALSE)
+sample1<-deconv_table[deconv_table$HUGO %in% tenX_genes$V1,] # 18758
+```
+
+## Nanostring probe list
+```{r}
+nanostring_genes <- read.delim("Data/Nanostring_WTA_q3_gene_list.txt", header = TRUE)
+sample1<-deconv_table[deconv_table$HUGO %in% nanostring_genes$TargetName,] # 16479
+```
+
+## Creating sample replicates
+```{r}
+set.seed(245)
+sample2<-sample1[sample(c(1:nrow(sample1)),size = 0.9*nrow(sample1)),]
+
+set.seed(282)
+sample3<-sample2[sample(c(1:nrow(sample2)),size = 0.9*nrow(sample2)),]
+```
+
+
+## Calling the deconvolution methods
+
+# Spotlight
+```{r}
+spl1 <-spotlight_deconv(sample1,signature_reference)
+spl1$sample_number<- c(rep("sample1",nrow(spl1)))
+
+spl2 <-spotlight_deconv(sample2,signature_reference)
+spl2$sample_number<- c(rep("sample2",nrow(spl2)))
+
+spl3 <-spotlight_deconv(sample3,signature_reference)
+spl3$sample_number<- c(rep("sample3",nrow(spl3)))
+```
+
+
+# Spatial deconv (with TME)
+```{r}
+sd_tme1 <- spatial_deconv(sample1,signature_reference,matrix_type = "safeTME")
+sd_tme1$sample_number<- c(rep("sample1",nrow(sd_tme1)))
+
+sd_tme2 <- spatial_deconv(sample2,signature_reference,matrix_type = "safeTME")
+sd_tme2$sample_number<- c(rep("sample2",nrow(sd_tme2)))
+
+sd_tme3 <- spatial_deconv(sample3,signature_reference,matrix_type = "safeTME")
+sd_tme3$sample_number<- c(rep("sample3",nrow(sd_tme3)))
+```
+
+# Spatial deconv (with custom matrix)
+```{r}
+sd_cus1 <- spatial_deconv(sample1,signature_reference,matrix_type = "custom")
+sd_cus1$sample_number<- c(rep("sample1",nrow(sd_cus1)))
+
+sd_cus2 <- spatial_deconv(sample2,signature_reference,matrix_type = "custom")
+sd_cus2$sample_number<- c(rep("sample2",nrow(sd_cus2)))
+
+sd_cus3 <- spatial_deconv(sample3,signature_reference,matrix_type = "custom")
+sd_cus3$sample_number<- c(rep("sample3",nrow(sd_cus3)))
+```
+
+# To be put in the generating matrix function, used in all of them
+```{r}
+restest<-lapply(list(sample1, sample2, sample3), function(w) { rownames(w)<-w[,"HUGO"] ; w<-w[,-1]}) 
+sample1<-restest[[1]]
+sample2<-restest[[2]]
+sample3<-restest[[3]]
+```
+
+# Quantiseq
+```{r}
+sa1<-na.omit(sample1)
+sa2 <-na.omit(sample2)
+sa3 <- na.omit(sample3)
+
+quant1 <- deconvolute(sa1, "quantiseq",tumor = FALSE)
+quant1$sample_number<- c(rep("sample1",nrow(quant1)))
+
+quant2 <- deconvolute(sa2, "quantiseq",tumor = FALSE)
+quant2$sample_number<- c(rep("sample2",nrow(quant2)))
+
+quant3 <- deconvolute(sa3, "quantiseq",tumor = FALSE)
+quant3$sample_number<- c(rep("sample3",nrow(quant3)))
+
+```
+
+# Epipc
+```{r}
+epic1 <- deconvolute(sa1,"epic",tumor=FALSE)
+epic1$sample_number<- c(rep("sample1",nrow(epic1)))
+
+epic2 <- deconvolute(sa2,"epic",tumor=FALSE)
+epic2$sample_number<- c(rep("sample2",nrow(epic2)))
+
+epic3 <- deconvolute(sa3,"epic",tumor=FALSE)
+epic3$sample_number<- c(rep("sample3",nrow(epic3)))
+```
+
+# MCP
+```{r}
+mcp1 <- deconvolute(sa1, "mcp_counter")
+mcp1$sample_number<- c(rep("sample1",nrow(mcp1)))
+
+mcp2 <- deconvolute(sa2, "mcp_counter")
+mcp2$sample_number<- c(rep("sample2",nrow(mcp2)))
+
+mcp3 <- deconvolute(sa3, "mcp_counter")
+mcp3$sample_number<- c(rep("sample3",nrow(mcp3)))
+
+
+# Converting mcp to fraction snad adding the deconv type column
+mcp_tables <-lapply(list(mcp1,mcp2,mcp3), function(i) 
+  {i$pbmc8k_TPM=i$pbmc8k_TPM/sum(i$pbmc8k_TPM)
+   i$pbmc6k_TPM=i$pbmc6k_TPM/sum(i$pbmc6k_TPM)
+    i$liver_TPM=i$liver_TPM/sum(i$liver_TPM)
+    i$deconv_type<-c(rep("MCP",nrow(i)))
+     return (i)})
+```
+
+# Making the qualitative graph
+```{r}
+plot_deconv<-function(res,title)
+ {
+nb.cols <- 18
+mycolors <- colorRampPalette(brewer.pal(11, "Set3"))(nb.cols)
+  
+  res %>% rename("pbmc8k"="pbmc8k_TPM","pbmc6k"="pbmc6k_TPM","liver"="liver_TPM")  %>%    dplyr::select(cell_type,pbmc8k,pbmc6k,liver) %>% 
+  gather(sample, fraction, -cell_type) %>%
+  # plot as stacked bar chart
+  ggplot(aes(x=sample, y=fraction, fill=cell_type)) +
+    geom_bar(stat='identity') +
+    coord_flip() +
+    #scale_fill_brewer(palette="Paired") +
+    scale_fill_manual (values = c ( "B cell"  =  "#8DD3C7" , "Macrophage M1"  =  "#FFFFB3", "Macrophage M2"  =  "#FFFFB3",               
+  "Monocyte"  =  "#BEBADA", "Neutrophil"  =  "#FB8072", "NK cell"  =  "#80B1D3" , "T cell CD4+ (non-regulatory)"  =  "#FDB462" ,"T cell CD8+"  =  "#FDB462",               "T cell regulatory (Tregs)"  =  "#FDB462" ,"Myeloid dendritic cell"  =  "#B3DE69" ,      "uncharacterized cell"  =  "#FCCDE5",       "T cell"  =  "#FDB462" ,  "cytotoxicity score"  =  "#C9B4A7" ,          "Macrophage/Monocyte"  =  "#D9D9D9",       "Endothelial cell"  =  "#BC80BD" ,  "Cancer associated fibroblast"  =  "#CCEBC5" , "T cell CD4+"  =  "#FDB462","Progenitor" = "#573F94","Dendritic cell" = "#B3DE69","Macrophage"="#FFFFB3", "Mast cell"="#E6B9A1","Plasma cell"="#E6E6CA","Fibroblast cell"="#CCEBC5")) + 
+    scale_x_discrete(limits = rev(levels(res))) +ggtitle(title)+ theme(plot.title = element_text(hjust = 0.5))
+}
+
+
+## Simulating actual data with proportions of single cell in the data
+
+control_table<- data.frame(cell_type=c("B cell","T cell","Monocyte","NK cell"),
+                           sample_number=c("control","control","control","control"),
+                           deconv_type=c("Actual_data","Actual_data","Actual_data","Actual_data"),
+                           liver_TPM=c(0.2,0.5,0.2,0.1),
+                           pbmc8k_TPM=c(0.22,0.50,0.22,0.06),
+                           pbmc6k_TPM=c(0.17,0.50,0.25,0.08))
+
+
+
+table.p <- ggtexttable(control_table, rows = NULL,
+                       theme = ttheme("blank"),
+                                      )%>%
+ tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2)
+
+
+
+qualitative_graph<-ggarrange(
+  plot_deconv(control_table,"Actual Data"),
+  table.p,
+  ggplot() + theme_void(),
+  plot_deconv(quant1,"A. Quantiseq 100%"),
+  plot_deconv(quant2,"B. Quantiseq 90% of A"),
+  plot_deconv(quant3,"C. Quantiseq 90% of B"),
+  plot_deconv(mcp_tables[[1]],"D. MCP 100%"),
+  plot_deconv(mcp_tables[[2]],"E. MCP 90% of D"),
+  plot_deconv(mcp_tables[[3]],"F. MCP 90% of E"),
+  plot_deconv(epic1,"G. EPIC 100%"),
+  plot_deconv(epic1,"H. EPIC 90% of G"),
+  plot_deconv(epic1,"I. EPIC 90% of H"),
+  plot_deconv(spl1,"J. SPOTLight 100%"),
+  plot_deconv(spl2,"K. SPOTLight 90% of J"),
+  plot_deconv(spl3,"L. SPOTLight 90% of K"),
+  plot_deconv(sd_tme1,"M. Spatial Deconv (safeTME)"),
+  plot_deconv(sd_tme2,"N. Spatial Deconv (safeTME) 90 % of M"),
+  plot_deconv(sd_tme3,"O. Spatial Deconv (safeTME) 90 % of N"),
+  plot_deconv(sd_cus1,"P. Spatial Deconv (pbmc8k)"),
+  plot_deconv(sd_cus2,"Q. Spatial Deconv (pbmc8k) 90 % of P"),
+  plot_deconv(sd_cus3,"R. Spatial Deconv (pbmc8k) 90 % of R"),
+  widths = c(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1), align = "h", nrow=7,ncol = 3,common.legend = TRUE,legend = "bottom")
+
+
+qualitative_graph
+
+```
+
+# Making a singular qunatitative table
+```{r}
+# Quantiseq tables
+quantiseq_tables <- lapply(list(quant1,quant2,quant3), function(i) {i$deconv_type<-c(rep("Quantiseq",nrow(i)));return (i)})
+
+# Epic tables
+epic_tables <- lapply(list(epic1,epic2,epic3), function(i) {i$deconv_type<-c(rep("Epic",nrow(i)));return (i)})
+
+# Mcp Tables
+#mcp_tables <-lapply(list(mcp1,mcp2,mcp3), function(i) {i$deconv_type<-c(rep("MCP",nrow(i)));return (i)})
+
+# Spotlight tables
+spotlight_tables <- lapply(list(spl1,spl2,spl3), function(i) {i$deconv_type<-c(rep("Splotlight",nrow(i)));return (i)})
+
+# Spatial Decov (TME) tables
+spatial_deconv_tme_tables <- lapply(list(sd_tme1,sd_tme2,sd_tme3), function(i) {i$deconv_type<-c(rep("Spatial_Deconv_tme",nrow(i)));return (i)})
+
+# Spatial Deconv Customised tables
+spatial_deconv_cus_tables <- lapply(list(sd_cus1,sd_cus2,sd_cus3), function(i) {i$deconv_type<-c(rep("Spatial_Deconv_cus",nrow(i)));return (i)})
+
+# Joining all the tables
+quantitative_tables <- rbind(rbindlist(quantiseq_tables),rbindlist(epic_tables), rbindlist(mcp_tables),rbindlist(spotlight_tables), rbindlist(spatial_deconv_tme_tables), rbindlist(spatial_deconv_cus_tables))
+
+```
+
+
+# Grouping one of cells
+```{r}
+
+quantitative_tables$cell_type<-str_replace_all(quantitative_tables$cell_type, fixed(c("T cell CD4+ (non-regulatory)" = "T cell" , "T cell CD8+" = "T cell","T cell regulatory (Tregs)" = "T cell", "T cell CD4+" = "T cell", "Macrophage M1" = "Macrophage",    "Macrophage M2" = "Macrophage")))
+
+# Summarising all the T cells together
+summarised_quantitative_table<-aggregate(cbind(liver_TPM,pbmc8k_TPM,pbmc6k_TPM) ~ cell_type + deconv_type + sample_number , data = quantitative_tables, FUN= sum , na.rm=TRUE)
+
+## Note to self:
+## Another cool way of aggregating data is by using group by in dplyr
+## Eg on the same data, as below:
+##   quantitative_tables %>%
+##   group_by(cell_type,sample_number,deconv_type) %>%
+##   summarise_each(funs(sum))
+```
+
+# Quantitative Plots
+```{r}
+
+# Adding actual proportions to the tables
+for (i in 1:nrow(summarised_quantitative_table))
+{if (summarised_quantitative_table$cell_type[i]=="B cell")
+  summarised_quantitative_table$actual_prop[i]<- 0.2
+
+else if (summarised_quantitative_table$cell_type[i]=="T cell")
+  summarised_quantitative_table$actual_prop[i] <-0.5
+
+else if (summarised_quantitative_table$cell_type[i]=="Monocyte")
+  summarised_quantitative_table$actual_prop[i] <-0.2
+
+else if (summarised_quantitative_table$cell_type[i]=="NK cell")
+  summarised_quantitative_table$actual_prop[i] <-0.1
+
+else
+  summarised_quantitative_table$actual_prop[i] <-0
+}
+
+
+# Plot function
+quantitative_plots <- function(column_name, plot_title)
+{
+nb.cols <- 18
+mycolors <- colorRampPalette(brewer.pal(11, "Set3"))(nb.cols)
+
+ggplot(summarised_quantitative_table,aes(x=actual_prop,y=column_name, color,group=cell_type)) + geom_point(aes(shape=deconv_type, color=cell_type), size=3) +
+  scale_color_manual (values = c ( "B cell"  =  "#8DD3C7" , "Macrophage"  =  "#FFFFB3","Monocyte"  =  "#BEBADA", "Neutrophil"  =  "#FB8072", "NK cell"  =  "#80B1D3" , "T cell"  =  "#FDB462" ,"Myeloid dendritic cell"  =  "#B3DE69" ,      "uncharacterized cell"  =  "#FCCDE5",  "cytotoxicity score"  =  "#C9B4A7" , "Macrophage/Monocyte"  =  "#D9D9D9",       "Endothelial cell"  =  "#BC80BD" ,  "Cancer associated fibroblast"  =  "#CCEBC5" ,"Progenitor" = "#573F94","Dendritic cell" = "#B3DE69", "Mast cell"="#E6B9A1","Plasma cell"="#E6E6CA","Fibroblast cell"="#CCEBC5")) +
+  scale_shape_manual(values=c(0,1,2,3, 16, 17,11,4,8))  + ggtitle(plot_title) + theme(plot.title = element_text(hjust = 0.5)) +   theme(axis.text.y   = element_text(size=14),
+        axis.text.x   = element_text(size=14),
+        axis.title.y  = element_text(size=14),
+        axis.title.x  = element_text(size=14),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill=NA, size=1)) +
+xlab("Actual proportions") +
+ylab("Predicted proportions")
+}
+
+quantitative_graphs <- ggarrange(
+  quantitative_plots(summarised_quantitative_table$liver_TPM, "A. Liver"),
+  quantitative_plots(summarised_quantitative_table$pbmc8k_TPM,"B. PBMC_8K"),
+  quantitative_plots(summarised_quantitative_table$pbmc6k_TPM,"C. PBMC_6K"),
+  widths = c(1,1,1),  align = "h", nrow=1,ncol = 3,common.legend = TRUE,legend = "bottom"
+)
+
+quantitative_graphs
+```
+
+
+```{r}
+pdf("Results/Plots/nanostring.pdf", width = 25, height = 20)
+qualitative_graph
+quantitative_graphs
+dev.off()
+```
+

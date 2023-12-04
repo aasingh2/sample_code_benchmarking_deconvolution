@@ -1,0 +1,263 @@
+---
+title: "Testing with a different visium dataset"
+author: "Aakanksha Singh"
+date: "2022-10-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("library_loading.R")
+source("processing_sce.R")
+source("Generating_a_pseudobulk_sample.R")
+source("Spotlight_deconv.R")
+source("spatial_deconv.R")
+source("updated_spatial_deconv.R")
+source("bootstrapping_with_subsampling.R")
+source("bootstrapping_without_subsampling_for_hodgkins_lymphoma.R")
+```
+
+
+## To explore the datasets in the library
+```{r}
+library(ExperimentHub)
+library(DropletUtils)
+eh <- ExperimentHub()
+(q <- query(eh, "TENxVisium"))
+```
+
+
+## Loading the Datsets (To be executed only once)
+```{r}
+library(TENxVisiumData)
+spe <- HumanOvarianCancer()
+
+wta <- spe
+targeted_immunology<- swapAltExp(spe,"TargetedImmunology", saved = "original")
+targeted_pan_cancer<- swapAltExp(spe,"TargetedPanCancer", saved = "original")
+```
+
+## Creating Pseudobulk samples ( to be executed only once)
+```{r}
+file_folder <- "data/hodgkin's_lymphoma/"
+
+wta<-processing_sce(read10xCounts(paste0(file_folder,"hodgkin's_lymphoma_WTA/","filtered_feature_bc_matrix" )),"WTA")
+saveRDS(wta, file = "data/hodgkin's_lymphoma_wta.rds")
+ 
+targeted_immunology<-processing_sce(read10xCounts(paste0(file_folder,"hodgkin's_lymphoma_immunology_panel/","filtered_feature_bc_matrix" )),"Targeted_immunology")
+saveRDS(targeted_immunology, file = "data/hodgkin's_lymphoma_immunology_panel.rds")
+
+targeted_pan_cancer<-processing_sce(read10xCounts(paste0(file_folder,"hodgkin's_lymphoma_pan_cancer_panel/","filtered_feature_bc_matrix" )),"Pan_cancer_panel")
+saveRDS(targeted_pan_cancer, file = "data/hodgkin's_lymphoma_targeted_pan_cancer.rds")
+```
+
+
+## Reading the annotated samples ( from memory)
+```{r}
+wta <- readRDS("data/hodgkin's_lymphoma_wta.rds")
+cell_count_wta <- as.data.frame(table(wta$cell))
+
+targeted_immunology <- readRDS("data/hodgkin's_lymphoma_immunology_panel.rds")
+cell_count_targeted_immunology <- as.data.frame(table(targeted_immunology$cell))
+
+targeted_pan_cancer <- readRDS("data/hodgkin's_lymphoma_targeted_pan_cancer.rds")
+cell_count_targeted_pan_cancer <- as.data.frame(table(targeted_pan_cancer$cell))
+
+signature_reference <- readRDS("data/hodgkin's_lymphoma_wta.rds")
+
+```
+
+```{r}
+all_genes <- data.frame("V1"=rowData(wta)$Symbol)
+BD_genes <- read.delim("data/cDNA_BD_Kit.txt", header = FALSE) 
+tenX_genes <-read.delim("data/Visium_gene_list.txt", header = FALSE)
+nanostring_genes <- read.delim("data/Nanostring_WTA_q3_gene_list.txt", header = FALSE)
+```
+
+```{r}
+gene_list <- BD_genes
+
+final_table <-data.frame()
+for (i in 1:30)
+
+{
+  ## WTA
+wta_cell_table <-data.frame("cell_type"= c ("B cells","Monocytes","NK cells","T cells")) %>% 
+                    left_join(cell_count_wta, by = c("cell_type" = "Var1")) %>% rowwise() %>% 
+                    mutate(inDeconv = as.integer(runif(1,min=5,max = Freq))) %>%  as.data.frame()
+
+wta_cell_table <- wta_cell_table %>% mutate(inDeconv_Frac = inDeconv/sum(inDeconv))
+
+wta_for_loop<- generating_matrix_for_deconv(wta[rowData(wta)$Symbol %in% gene_list$V1,],"wta",wta_cell_table[1,1],wta_cell_table[1,3],
+                                      wta_cell_table[2,1],wta_cell_table[2,3],
+                                      wta_cell_table[3,1],wta_cell_table[3,3],
+                                      wta_cell_table[4,1],wta_cell_table[4,3])
+
+## targeted_immunology
+
+targeted_immunology_cell_table <-data.frame("cell_type"= c ("B cells","Monocytes","NK cells","T cells")) %>% 
+                    left_join(cell_count_targeted_immunology, by = c("cell_type" = "Var1")) %>% rowwise() %>% 
+                    mutate(inDeconv = as.integer(runif(1,min=5,max=Freq))) %>% as.data.frame()
+
+targeted_immunology_cell_table <- targeted_immunology_cell_table %>% mutate(inDeconv_Frac = inDeconv/sum(inDeconv))
+
+targeted_immunology_for_loop<- generating_matrix_for_deconv(targeted_immunology[rowData(targeted_immunology)$Symbol %in% gene_list$V1,],"targeted_immunology",targeted_immunology_cell_table[1,1],targeted_immunology_cell_table[1,3],
+                                      targeted_immunology_cell_table[2,1],targeted_immunology_cell_table[2,3],
+                                      targeted_immunology_cell_table[3,1],targeted_immunology_cell_table[3,3],
+                                      targeted_immunology_cell_table[4,1],targeted_immunology_cell_table[4,3])
+
+## pan_cancer panel
+targeted_pan_cancer_cell_table <-data.frame("cell_type"= c ("B cells","Monocytes","NK cells","T cells")) %>% 
+                    left_join(cell_count_targeted_pan_cancer, by = c("cell_type" = "Var1")) %>% rowwise() %>% 
+                    mutate(inDeconv = as.integer(runif(1,min=5,max=Freq))) %>% as.data.frame()
+targeted_pan_cancer_cell_table <- targeted_pan_cancer_cell_table %>% mutate(inDeconv_Frac = inDeconv/sum(inDeconv))
+
+targeted_pan_cancer_for_loop<- generating_matrix_for_deconv(targeted_pan_cancer[rowData(targeted_pan_cancer)$Symbol %in% gene_list$V1,],"targeted_pan_cancer",targeted_pan_cancer_cell_table[1,1],targeted_pan_cancer_cell_table[1,3],
+                                      targeted_pan_cancer_cell_table[2,1],targeted_pan_cancer_cell_table[2,3],
+                                      targeted_pan_cancer_cell_table[3,1],targeted_pan_cancer_cell_table[3,3],
+                                      targeted_pan_cancer_cell_table[4,1],targeted_pan_cancer_cell_table[4,3])
+
+## Merging to make a pseudobulk dataset
+deconv_table<- merge(wta_for_loop,targeted_immunology_for_loop,by.x="HUGO",by.y="HUGO", all=TRUE) %>% merge(targeted_pan_cancer_for_loop,by="HUGO",all=TRUE)
+
+## Replacing the NAs in the dataframe with 00 for Spotlight to run ( Also chnaged the cutoff of the NMF model to mean AUC less than 0.66(earlier 0.8), otherwise spotlight didn't run with this dataset)
+deconv_table <- deconv_table %>% replace(is.na(.), 0) 
+
+result <-bootstrapping_without_subsampling_for_hodgkins_lymphoma(deconv_table)
+
+result$bootstrap_run=i
+
+final_table <- rbind(final_table,result) 
+
+print(paste0(i,"/30 of the Bootstrap done"))
+
+rm(wta_for_loop,targeted_immunology_for_loop,targeted_pan_cancer_for_loop,deconv_table)
+
+}
+```
+
+```{r}
+cell_deconvolutions <- final_table
+
+wta_dw<-cell_deconvolutions[,!names(cell_deconvolutions) %in% c("targeted_immunology_TPM","targeted_pan_cancer_TPM","targeted_immunology_actual","targeted_pan_cancer_actual")] %>% mutate("Dataset"="wta") %>% rename("Predicted_values"="wta_TPM","True_values"="wta_actual")
+
+targeted_immunology_dw <- cell_deconvolutions[,!names(cell_deconvolutions) %in% c("wta_TPM","targeted_pan_cancer_TPM","wta_actual","targeted_pan_cancer_actual")] %>% mutate("Dataset"="targeted_immunology") %>% rename("Predicted_values"="targeted_immunology_TPM","True_values"="targeted_immunology_actual")
+
+targeted_pan_cancer_dw <- cell_deconvolutions[,!names(cell_deconvolutions) %in% c("wta_TPM","targeted_immunology_TPM","wta_actual","targeted_immunology_actual")] %>% mutate("Dataset"="targeted_pan_cancer") %>% rename("Predicted_values"="targeted_pan_cancer_TPM","True_values"="targeted_pan_cancer_actual")
+
+cell_deconvolutions_for_plotting=rbind(wta_dw,targeted_immunology_dw,targeted_pan_cancer_dw)
+```
+
+
+```{r}
+write.csv(all_genes_result,"data/Bootstrap_data/all_genes_genes_boot_lymphoma.csv")
+write.csv(Tenx_result,"data/Bootstrap_data/tenx_genes_boot_lymphoma.csv")
+write.csv(Nanostring_results,"data/Bootstrap_data/nanostring_genes_boot_lymphoma.csv")
+write.csv(BD_result,"data/Bootstrap_data/bd_genes_boot_lymphoma.csv")
+
+all_genes_result <- cell_deconvolutions_for_plotting
+BD_result <- cell_deconvolutions_for_plotting
+Tenx_result <- cell_deconvolutions_for_plotting
+Nanostring_results <- cell_deconvolutions_for_plotting
+```
+
+
+```{r}
+deconv_type_plots <- function(cell_deconvolutions_for_plotting,deconv_method, plot_title)
+{
+  nb.cols <- 18
+  mycolors <- colorRampPalette(brewer.pal(11, "Set3"))(nb.cols)
+  
+  cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type==deconv_method) %>% 
+  ggplot(aes(x=(True_values),y=(Predicted_values), color,group=cell_type)) + geom_point(aes( color=cell_type), size=3) +
+    scale_color_manual (values = c ( "B cell"  =  "#8DD3C7" , "Macrophage"  =  "#FFFFB3","Monocyte"  =  "#BEBADA", "Neutrophil"  =  "#FB8072", "NK cell"= "#80B1D3" , "T cell "  =  "#FDB462" ,"Myeloid dendritic cell"  =  "#B3DE69" ,      "uncharacterized cell"  =  "#FCCDE5",  "cytotoxicity score"  =  "#C9B4A7" , "Macrophage/Monocyte"  =  "#D9D9D9",       "Endothelial cell"  =  "#BC80BD" ,  "Cancer associated fibroblast"  =  "#CCEBC5" ,"Progenitor" = "#573F94","Dendritic cell" = "#B3DE69", "Mast cell"="#E6B9A1","Plasma cell" = "#E6E6CA", "Fibroblast cell" = "#CCEBC5",  "Macropahge" = "#FFFFB3" ,"Basophils" = "#745d5a" ,"Baophil"= "#745d5a","T cell"= "#5A5A5A")) +
+    geom_smooth(method = "lm", formula = y~x, col = "black") +
+    scale_shape_manual(values=c(0,1,2,3, 16, 17,11,4,8))  + ggtitle(plot_title) + theme(plot.title = element_text(hjust = 0.5)) +   
+    theme(axis.text.y   = element_text(size=14),
+          axis.text.x   = element_text(size=14),
+          axis.title.y  = element_text(size=14),
+          axis.title.x  = element_text(size=14),
+          panel.background = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          axis.line = element_line(colour = "black"),
+          panel.border = element_rect(colour = "black", fill=NA, size=1)) +                                                                                                                                      
+    xlab("Actual proportions") +
+    ylab("Predicted proportions")
+}
+
+
+```
+
+## plotting all together
+```{r}
+all_genes_result <- read.csv("data/Bootstrap_data/all_genes_genes_boot_lymphoma.csv",header = TRUE)
+Nanostring_results <- read.csv("data/Bootstrap_data/nanostring_genes_boot_lymphoma.csv",header = TRUE)
+BD_result <- read.csv("data/Bootstrap_data/bd_genes_boot_lymphoma.csv",header = TRUE)
+Tenx_result <- read.csv("data/Bootstrap_data/tenx_genes_boot_lymphoma.csv",header = TRUE)
+
+## getting the common legend
+for_legend <- deconv_type_plots(all_genes_result,"Spatial_deconv_tme", "All genes Spatial Decon (TME signature)") + theme(legend.position = "bottom",
+        legend.key.size = unit(1, "cm"),
+        legend.text = element_text(size =  12),
+        legend.title = element_text(size = 15, face = "bold"),
+        legend.direction = "horizontal")
+  
+
+
+common_legend <- get_legend(for_legend)
+
+ 
+all_genes_graphs <- ggarrange(
+  deconv_type_plots(all_genes_result,"Quantiseq", "All genes Quantiseq"),
+  deconv_type_plots(all_genes_result,"EPIC", "All genes Epic"),
+  deconv_type_plots(all_genes_result,"MCP", "All genes MCP"),
+  deconv_type_plots(all_genes_result,"Spotlight", "All genes Spotlight"),
+  deconv_type_plots(all_genes_result,"Spatial_deconv_cus", "All genes Spatial Decon (wta)"),
+  deconv_type_plots(all_genes_result,"Spatial_deconv_tme", "All genes Spatial Decon (TME)"),
+  widths=c(1,1,1,1,1,1), align="v", nrow =6, ncol=1,common.legend = TRUE,legend = "none")
+
+bd_graphs <- ggarrange(
+  deconv_type_plots(BD_result,"Quantiseq", "BD Quantiseq"),
+  deconv_type_plots(BD_result,"EPIC", "BD Epic"),
+  deconv_type_plots(BD_result,"MCP", "BD MCP"),
+  deconv_type_plots(BD_result,"Spotlight", "BD Spotlight"),
+  deconv_type_plots(BD_result,"Spatial_deconv_cus", "BD Spatial Decon (wta)"),
+  deconv_type_plots(BD_result,"Spatial_deconv_tme", "BD Spatial Decon (TME)"),
+  widths=c(1,1,1,1,1,1), align="v", nrow =6, ncol=1,common.legend = TRUE,legend = "none")
+  
+  Tenx_graphs <- ggarrange(
+  deconv_type_plots(Tenx_result,"Quantiseq", "10X Quantiseq"),
+  deconv_type_plots(Tenx_result,"EPIC", "10X Epic"),
+  deconv_type_plots(Tenx_result,"MCP", "10X MCP"),
+  deconv_type_plots(Tenx_result,"Spotlight", "10X Spotlight"),
+  deconv_type_plots(Tenx_result,"Spatial_deconv_cus", "10X Spatial Decon (wta)"),
+  deconv_type_plots(Tenx_result,"Spatial_deconv_tme", "10X Spatial Decon (TME)"),
+  widths=c(1,1,1,1,1,1), align="v", nrow =6, ncol=1,common.legend = TRUE,legend = "none")
+
+  Nanostring_graphs<- ggarrange(
+  deconv_type_plots(Nanostring_results,"Quantiseq", "NS Quantiseq"),
+  deconv_type_plots(Nanostring_results,"EPIC", "NS Epic"),
+  deconv_type_plots(Nanostring_results,"MCP", "NS MCP"),
+  deconv_type_plots(Nanostring_results,"Spotlight", "NS Spotlight"),
+  deconv_type_plots(Nanostring_results,"Spatial_deconv_cus", "NS Spatial Decon (wta)"),
+  deconv_type_plots(Nanostring_results,"Spatial_deconv_tme", "NS Spatial Decon (TME)"),
+  widths=c(1,1,1,1,1,1), align="v", nrow =6, ncol=1,common.legend = TRUE,legend = "none")
+
+
+
+quantitative_graphs <- ggarrange(
+  bd_graphs,Tenx_graphs,Nanostring_graphs,all_genes_graphs,
+  widths = c(1,1,1,1), align = "h", nrow=1, ncol = 4, legend.grob = common_legend, legend = "bottom")
+
+
+pdf("Results/Bootstrapped_graphs/NS_BD_tenx_lymphoma.pdf", height = 20, width = 15,onefile = TRUE)
+quantitative_graphs
+dev.off()
+
+
+```
+

@@ -1,0 +1,151 @@
+---
+title: "Breast cancer deconvolution with different panels"
+author: "Aakanksha Singh"
+date: "2022-11-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+source("library_loading.R")
+source("Spotlight_deconv.R")
+source("spatial_deconv.R")
+source("updated_spatial_deconv.R")
+source("bootstrapping_without_subsampling_human_ovarian_cancer.R")
+```
+
+```{r}
+library(ExperimentHub)
+library(DropletUtils)
+eh <- ExperimentHub()
+(q <- query(eh, "TENxVisium"))
+```
+
+## Loading the Datsets (To be executed only once)
+```{r}
+#BiocManager::install("TENxVisiumData")
+library(TENxVisiumData)
+spe <- HumanOvarianCancer()
+rownames(spe)= rowData(spe)$symbol
+wta <- spe
+
+targeted_immunology<- swapAltExp(spe,"TargetedImmunology", saved = "original")
+rownames(targeted_immunology) <- rowData(targeted_immunology)$symbol
+
+targeted_pan_cancer<- swapAltExp(spe,"TargetedPanCancer", saved = "original")
+rownames(targeted_pan_cancer) <- rowData(targeted_pan_cancer)$symbol
+```
+
+## Creating Pseudobulk samples from the spatial data( to be executed only once)
+```{r}
+pseudobulk_from_spatial_data <- function(known_sample,sample_name)
+{
+  # Summing the counts of all the cell rowwise to get a pseudobulk sample
+  samp<-as.data.frame(Matrix::rowSums(assays(known_sample)$counts))
+  samp<-cbind(rownames(known_sample),samp)
+  
+  # Aggregating rows with common gene symbol
+  samp<-aggregate(samp[,-1],by=samp[1],sum)
+  #colnames(samp)=c("HUGO",title)
+  
+  # Getting TPM ( where TPM= (count/total count)* 1000000)
+  count_sum<-sum(samp$x)
+  samp[,2]<-sapply(samp[,2],function(i) (i/count_sum)*1000000)
+  colnames(samp)=c("HUGO",(paste0(sample_name,"_TPM")))
+  return(samp)
+}
+
+spe_test <- pseudobulk_from_spatial_data(spe,"SPE")
+targeted_immunology_test <- pseudobulk_from_spatial_data(targeted_immunology,"Targeted_immunology")
+targeted_pan_cancer_test <- pseudobulk_from_spatial_data(targeted_pan_cancer,"Targeted_pan_cancer")
+```
+
+## Signature Reference
+```{r}
+signature_reference <- spe
+signature_reference = signature_reference[rownames(signature_reference) != "",]
+
+```
+
+```{r}
+all_genes <- data.frame("V1"=rowData(spe)$symbol)
+BD_genes <- read.delim("Data/cDNA_BD_Kit.txt", header = FALSE) 
+tenX_genes <-read.delim("Data/Visium_gene_list.txt", header = FALSE)
+nanostring_genes <- read.delim("Data/Nanostring_WTA_q3_gene_list.txt", header = FALSE)
+```
+
+```{r}
+deconv_table<- merge(spe_test  ,targeted_immunology_test,by.x="HUGO",by.y="HUGO", all=TRUE) %>% merge(targeted_pan_cancer_test,by="HUGO",all=TRUE)
+
+df <- deconv_table %>% replace(is.na(.), 0) %>% dplyr::filter(HUGO != "")
+  
+result <-bootstrapping_without_subsampling_human_ovarian_cancer(df)
+
+```
+
+```{r}
+cell_deconvolutions <- result
+
+wta_dw<-cell_deconvolutions[,c(1,2,5)] %>%  mutate("Dataset"="WTA") %>% 
+  dplyr::rename("Predicted_values"="SPE_TPM")
+
+targeted_immunology_dw <- cell_deconvolutions[,c(1,2,4)] %>% mutate("Dataset"="targeted_immunology") %>%  dplyr::rename("Predicted_values"="Targeted_immunology_TPM")
+
+targeted_pan_cancer_dw <- cell_deconvolutions[,c(1,2,3)] %>% mutate("Dataset"="targeted_pan_cancer") %>% dplyr::rename("Predicted_values"="Targeted_pan_cancer_TPM")
+
+cell_deconvolutions_for_plotting=rbind(wta_dw,targeted_immunology_dw,targeted_pan_cancer_dw)
+```
+
+## Qualitative plots
+```{r}
+plot_deconv<-function(res,title,method)
+ {
+  res %>% dplyr::filter(deconv_type == method) %>%
+  ggplot(aes(x=Dataset, y=Predicted_values, fill=cell_type)) +
+  geom_bar(stat='identity') +
+  coord_flip() +
+  scale_fill_manual (values = c ( "B cell"  =  "#8DD3C7" , "Macrophage"  =  "#FFFFB3","Monocyte"  =  "#BEBADA", "Neutrophil"  =  "#FB8072", "NK cell"  =  "#80B1D3" , "T cell"  =  "#FDB462" ,"Myeloid dendritic cell"  =  "#B3DE69" ,      "uncharacterized cell"  =  "#FCCDE5",  "cytotoxicity score"  =  "#C9B4A7" , "Macrophage/Monocyte"  =  "#D9D9D9",       "Endothelial cell"  =  "#BC80BD" ,  "Cancer associated fibroblast"  =  "#CCEBC5" ,"Progenitor" = "#573F94","Dendritic cell" = "#B3DE69", "Mast cell"="#E6B9A1","Plasma cell"="#E6E6CA","Fibroblast cell"="#CCEBC5")) +
+  scale_x_discrete(limits = rev(levels(res))) +ggtitle(title)+ theme(plot.title = element_text(hjust = 0.5),axis.text=element_text(size=14),
+        axis.title=element_text(size=14))
+}
+```
+
+```{r}
+## Correcting the misspelled macrophages
+cell_deconvolutions_for_plotting$cell_type <- str_replace(cell_deconvolutions_for_plotting$cell_type,"Macropahge", "Macrophage")
+
+#write_csv(cell_deconvolutions_for_plotting,"Data/human_ovarian_cancer/human_ovarian_cancer_result.csv")
+
+pdf("Results/human_ovarian_cancer_qualitative.pdf", width = 18, height = 8, onefile = FALSE)
+ggarrange(
+plot_deconv(cell_deconvolutions_for_plotting,"Quantiseq","Quantiseq")+ labs(x="") + theme(axis.title.y = element_text(size = 12)),
+plot_deconv(cell_deconvolutions_for_plotting,"MCP","MCP")+ labs(x="") + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank(),axis.title.y = element_text()), 
+plot_deconv(cell_deconvolutions_for_plotting,"EPIC","EPIC") +labs(x="") + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank(),axis.title.y = element_text()), 
+plot_deconv(cell_deconvolutions_for_plotting,"Spatial Decon ( with TME)","Spatial_deconv_tme")+ labs(x="")+ theme(axis.text.y=element_blank(),axis.ticks.y=element_blank(),axis.title.y = element_text()),
+common.legend = TRUE, legend = "bottom",nrow = 1, widths = c(1.22,1,1,1)
+)
+dev.off()
+
+png("Results/human_ovarian_cancer_qualitative.png", width = 2040 , height = 1000, units = "px")
+ggarrange(
+plot_deconv(cell_deconvolutions_for_plotting,"Quantiseq","Quantiseq")+ labs(x="") + theme(axis.title.y = element_text(size = 12)),
+plot_deconv(cell_deconvolutions_for_plotting,"MCP","MCP")+ labs(x="") + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank(),axis.title.y = element_text()), 
+plot_deconv(cell_deconvolutions_for_plotting,"EPIC","EPIC") +labs(x="") + theme(axis.text.y=element_blank(),axis.ticks.y=element_blank(),axis.title.y = element_text()), 
+plot_deconv(cell_deconvolutions_for_plotting,"Spatial Decon(with TME)","Spatial_deconv_tme")+ labs(x="")+ theme(axis.text.y=element_blank(),axis.ticks.y=element_blank(),axis.title.y = element_text()),
+common.legend = TRUE, legend = "bottom",nrow = 1, widths = c(1.22,1,1,1)
+)
+dev.off()
+```
+
+
+```{r}
+cowplot::plot_grid(plot_deconv(cell_deconvolutions_for_plotting,"Quantiseq","Quantiseq"),
+plot_deconv(cell_deconvolutions_for_plotting,"MCP","MCP"), 
+plot_deconv(cell_deconvolutions_for_plotting,"EPIC","EPIC"), 
+plot_deconv(cell_deconvolutions_for_plotting,"Spatial Decon ( with TME)","Spatial_deconv_tme"), nrow = 1,
+                   labels = "auto", comm)
+```
+

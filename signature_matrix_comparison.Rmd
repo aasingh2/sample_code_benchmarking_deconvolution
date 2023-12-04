@@ -1,0 +1,353 @@
+---
+title: "Comparing Signature matrices"
+output: html_document
+date: "2023-08-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(SpatialDecon)
+```
+
+
+# Reading all the signature matrices
+```{r}
+lm22= read_delim("Data/Signature_matrices/LM22_signature_matrix.txt")
+til10 = read_xlsx("Data/signature_matrices/TIL10_signature_matrix.xlsx", sheet = "Signature") %>% 
+        mutate_at(vars(-GeneSymbol), as.numeric)
+immunostates= read_xlsx("Data/Signature_matrices/Immunostates_blood_cell_matrix.xlsx") %>% 
+              janitor::row_to_names(2) %>% 
+              mutate_at(vars(-Gene), as.numeric)
+safetme= safeTME %>% as.data.frame() %>% rownames_to_column(var = "Gene_symbol")
+glioma_sce= read_csv("Data/Signature_matrices/Custom_signature_matrix_from_glioma_sce.csv")
+tonsil_sce= read_csv("Data/Signature_matrices/Custom_signature_matrix_from_tonsil_sce.csv")
+
+```
+
+# Violoin plots of the expression values of B cells in the different signature matrices
+```{r}
+
+background_of_genes_in_signature_matrices = full_join(
+lm22 %>% 
+  dplyr::rename("Gene_symbol" = "Gene symbol") %>% 
+  mutate("B_cell.LM22"= `B cells naive`+`B cells memory`) %>% 
+  select(Gene_symbol,B_cell.LM22),
+
+til10 %>% 
+  dplyr::rename("Gene_symbol"= "GeneSymbol",
+                 "B_cell.TIL10"= "B.cells") %>% 
+  select(Gene_symbol,B_cell.TIL10),
+
+by=c("Gene_symbol"="Gene_symbol")) %>% 
+full_join(
+immunostates %>% 
+   dplyr::rename("Gene_symbol"= "Gene") %>% 
+   mutate(B_cell.Immunostates= memory_B_cell + naive_B_cell) %>% 
+   select(Gene_symbol, B_cell.Immunostates),
+by=c("Gene_symbol"="Gene_symbol")) %>% 
+full_join(
+safetme %>% 
+  mutate(B_cell.safeTME= B.naive+B.memory) %>% 
+  select(Gene_symbol, B_cell.safeTME),
+by=c("Gene_symbol"="Gene_symbol")) %>% 
+pivot_longer(cols = starts_with("B_cell"),values_to = "Value", names_to = "Origin") %>% 
+mutate(Origin= str_replace(Origin,"B_cell.","")) %>% 
+ggplot(aes(x=Origin,y=log(Value), color=Origin))+
+  geom_violin() +
+  geom_point()
+
+```
+
+# Density distribution of the B cell exxpression values in signature matrices
+```{r}
+density_distribution_of_B_cell_values = full_join(
+lm22 %>% 
+  dplyr::rename("Gene_symbol" = "Gene symbol") %>% 
+  mutate("B_cell.LM22"= `B cells naive`+`B cells memory`) %>% 
+  select(Gene_symbol,B_cell.LM22),
+
+til10 %>% 
+  dplyr::rename("Gene_symbol"= "GeneSymbol",
+                 "B_cell.TIL10"= "B.cells") %>% 
+  select(Gene_symbol,B_cell.TIL10),
+
+by=c("Gene_symbol"="Gene_symbol")) %>% 
+full_join(
+immunostates %>% 
+   dplyr::rename("Gene_symbol"= "Gene") %>% 
+   mutate(B_cell.Immunostates= memory_B_cell + naive_B_cell) %>% 
+   select(Gene_symbol, B_cell.Immunostates),
+by=c("Gene_symbol"="Gene_symbol")) %>% 
+full_join(
+safetme %>% 
+  mutate(B_cell.safeTME= B.naive+B.memory) %>% 
+  select(Gene_symbol, B_cell.safeTME),
+by=c("Gene_symbol"="Gene_symbol")) %>% 
+pivot_longer(cols = starts_with("B_cell"),values_to = "Value", names_to = "Origin") %>% 
+mutate(Origin= str_replace(Origin,"B_cell.","")) %>% 
+ggplot( aes(x=log(Value), fill=Origin)) + geom_density(alpha=.3)
+
+```
+
+################################################################################
+# Testing signature matrices with pseudobulk samples
+```{r}
+pbmc6k <- readRDS("Raw_annotated_data/pbmc6k.rds")
+cell_count_pbmc6k <- as.data.frame(table(pbmc6k$cell))
+
+pbmc8k <- readRDS("Raw_annotated_data/pbmc8k.rds")
+cell_count_pbmc8k <- as.data.frame(table(pbmc8k$cell))
+
+liver <- readRDS("Raw_annotated_data/liver.rds")
+cell_count_liver <- as.data.frame(table(liver$cell))
+
+signature_reference <- readRDS("Data/signature_reference")
+```
+
+```{r}
+source("library_loading.R")
+source("processing_sce.R")
+source("Generating_a_pseudobulk_sample.R")
+source("updated_spatial_deconv.R")
+source("signature_matrix_bootstrapping_without_subsampling.R")
+
+
+final_table <-data.frame()
+
+for (i in 1:30)
+
+{
+# PBMC6k Dataset
+pbmc6k_cell_table <-data.frame("cell_type"= c ("B cells","Monocytes","NK cells","T cells")) %>% 
+                    left_join(cell_count_pbmc6k, by = c("cell_type" = "Var1")) %>% rowwise() %>% 
+                    mutate(inDeconv = as.integer(runif(1,min=10,max = Freq))) %>%  as.data.frame()
+
+pbmc6k_cell_table <- pbmc6k_cell_table %>% mutate(inDeconv_Frac = inDeconv/sum(inDeconv))
+
+pbmc6k_for_loop<- generating_matrix_for_deconv(pbmc6k,"pbmc6k",pbmc6k_cell_table[1,1],pbmc6k_cell_table[1,3],
+                                      pbmc6k_cell_table[2,1],pbmc6k_cell_table[2,3],
+                                      pbmc6k_cell_table[3,1],pbmc6k_cell_table[3,3],
+                                      pbmc6k_cell_table[4,1],pbmc6k_cell_table[4,3])
+
+## PBMC8K Dataset
+
+pbmc8k_cell_table <-data.frame("cell_type"= c ("B cells","Monocytes","NK cells","T cells")) %>% 
+                    left_join(cell_count_pbmc8k, by = c("cell_type" = "Var1")) %>% rowwise() %>% 
+                    mutate(inDeconv = as.integer(runif(1,min=10,max=Freq))) %>% as.data.frame()
+
+pbmc8k_cell_table <- pbmc8k_cell_table %>% mutate(inDeconv_Frac = inDeconv/sum(inDeconv))
+
+pbmc8k_for_loop<- generating_matrix_for_deconv(pbmc8k,"pbmc8k",pbmc8k_cell_table[1,1],pbmc8k_cell_table[1,3],
+                                      pbmc8k_cell_table[2,1],pbmc8k_cell_table[2,3],
+                                      pbmc8k_cell_table[3,1],pbmc8k_cell_table[3,3],
+                                      pbmc8k_cell_table[4,1],pbmc8k_cell_table[4,3])
+
+## Immune liver Dataset
+liver_cell_table <-data.frame("cell_type"= c ("B cells","Monocytes","NK cells","T cells")) %>% 
+                    left_join(cell_count_liver, by = c("cell_type" = "Var1")) %>% rowwise() %>% 
+                    mutate(inDeconv = as.integer(runif(1,min=10,max=Freq))) %>% as.data.frame()
+liver_cell_table <- liver_cell_table %>% mutate(inDeconv_Frac = inDeconv/sum(inDeconv))
+
+liver_for_loop<- generating_matrix_for_deconv(liver,"liver",liver_cell_table[1,1],liver_cell_table[1,3],
+                                      liver_cell_table[2,1],liver_cell_table[2,3],
+                                      liver_cell_table[3,1],liver_cell_table[3,3],
+                                      liver_cell_table[4,1],liver_cell_table[4,3])
+
+## Merging to make a pseudobulk dataset
+deconv_table<- merge(liver_for_loop,pbmc8k_for_loop,by.x="HUGO",by.y="HUGO", all=TRUE) %>% merge(pbmc6k_for_loop,by="HUGO",all=TRUE)
+
+#result <-signature_matrix_bootstrapping_without_subsampling(deconv_table,signature_reference)
+result <-signature_matrix_bootstrapping_without_subsampling_without_cell_numbers(deconv_table,signature_reference)
+
+
+result$bootstrap_run=i
+
+final_table <- rbind(final_table,result) 
+
+print(paste0(i,"/30 of the Bootstrap done"))
+
+rm(pbmc6k_for_loop,pbmc8k_for_loop,liver_for_loop,deconv_table)
+
+}
+```
+
+## Data wrangling for plotting
+```{r}
+
+cell_deconvolutions <- final_table
+
+pb6k<-cell_deconvolutions[, !names(cell_deconvolutions) %in% c("pbmc8k_TPM","liver_TPM","pbmc8k_actual","liver_actual")] %>% mutate("Dataset"="pbmc6k") %>% dplyr::rename("Predicted_values"="pbmc6k_TPM","True_values"="pbmc6k_actual")
+
+pb8k <- cell_deconvolutions[,!names(cell_deconvolutions) %in% c("pbmc6k_TPM","liver_TPM","pbmc6k_actual","liver_actual")] %>% mutate("Dataset"="pbmc8k") %>% dplyr::rename("Predicted_values"="pbmc8k_TPM","True_values"="pbmc8k_actual")
+
+liv <- cell_deconvolutions[,!names(cell_deconvolutions) %in% c("pbmc8k_TPM","pbmc6k_TPM","pbmc8k_actual","pbmc6k_actual")] %>% mutate("Dataset"="Liver") %>% dplyr::rename("Predicted_values"="liver_TPM","True_values"="liver_actual")
+
+cell_deconvolutions_for_plotting=rbind(pb6k,pb8k,liv)
+
+cell_deconvolutions_for_plotting = cell_deconvolutions_for_plotting %>% mutate(cell_type= ifelse(cell_type=="T cells regulatory (Tregs)","T cell", cell_type))
+
+
+#write_csv(cell_deconvolutions_for_plotting,file = "Data/Bootstrap_datasignature_matrix_comparison_bootstrapped.csv")
+#write_csv(cell_deconvolutions_for_plotting,file = "Data/Bootstrap_datasignature_matrix_comparison_bootstrapped_without_cell_number.csv")
+
+cell_deconvolutions_for_plotting=read_csv("Data/Bootstrap_datasignature_matrix_comparison_bootstrapped.csv")
+cell_deconvolutions_for_plotting_without_cell_numbers= read_csv("Data/Bootstrap_datasignature_matrix_comparison_bootstrapped_without_cell_number.csv")
+```
+
+# Plotting function
+```{r}
+deconv_type_plots <- function(cell_deconvolutions_for_plotting,deconv_method, plot_title)
+{
+  nb.cols <- 18
+  mycolors <- colorRampPalette(brewer.pal(11, "Set3"))(nb.cols)
+  
+  cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type==deconv_method) %>% 
+  ggplot(aes(x=(True_values),y=(Predicted_values), color,group=cell_type)) + geom_point(aes( color=cell_type), size=3) +
+    scale_color_manual (values = c ( 
+      "B cell"  =  "#8DD3C7" , 
+      "Macrophage"  =  "#FFFFB3",
+      "Monocyte"  =  "#BEBADA", 
+      "Neutrophil"  =  "#FB8072", 
+      "NK cell"  =  "#80B1D3" , 
+      "T cell"  =  "#FDB462" ,
+      "Myeloid dendritic cell"  =  "#B3DE69" ,      
+      "uncharacterized cell"  =  "#FCCDE5",  
+      "cytotoxicity score"  =  "#C9B4A7" , 
+      "Macrophage/Monocyte"  =  "#D9D9D9",       
+      "Endothelial cell"  =  "#BC80BD" ,  
+      "Cancer associated fibroblast"  =  "#CCEBC5" ,
+      "Progenitor" = "#573F94",
+      "Dendritic cell" = "#B3DE69", 
+      "Mast cell"="#E6B9A1",
+      "Plasma cell"="#E6E6CA",
+      "Fibroblast cell"="#CCEBC5")) +
+    geom_smooth(method = "lm", formula = y~x, col = "black") +
+    scale_shape_manual(values=c(0,1,2,3, 16, 17,11,4,8))  + ggtitle(plot_title) + theme(plot.title = element_text(hjust = 0.5)) +   
+    theme(axis.text.y   = element_text(size=14),
+          axis.text.x   = element_text(size=14),
+          axis.title.y  = element_text(size=14),
+          axis.title.x  = element_text(size=14),
+          panel.background = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          axis.line = element_line(colour = "black"),
+          panel.border = element_rect(colour = "black", fill=NA, size=1)) +                                                                                                                                      
+    xlab("Actual proportions") +
+    ylab("Predicted proportions")
+}
+
+
+#unique(cell_deconvolutions_for_plotting$deconv_type)
+```
+
+```{r}
+library(ggpubr)
+library(RColorBrewer)
+signature_matrix_comparison_graphs <- ggarrange(
+  deconv_type_plots(cell_deconvolutions_for_plotting ,"Custom_pbmc8k", "Custom PBMC 8k"),
+  deconv_type_plots(cell_deconvolutions_for_plotting,"Glioma_sce", "Glioma sce"),
+  deconv_type_plots(cell_deconvolutions_for_plotting,"Immunostates", "Immunostates"),
+  deconv_type_plots(cell_deconvolutions_for_plotting,"LM22", "LM22"),
+  deconv_type_plots(cell_deconvolutions_for_plotting,"Spatial_decon_tme", "safeTME"),
+  deconv_type_plots(cell_deconvolutions_for_plotting,"TIL10", "TIL10"),
+  widths=c(1,1,1,1,1,1), align="h", nrow =1, ncol=6, common.legend = TRUE, legend = "bottom")
+
+signature_matrix_without_cell_numbers_comparison_graphs <- ggarrange(
+  deconv_type_plots(cell_deconvolutions_for_plotting_without_cell_numbers ,"Custom_pbmc8k", "Custom PBMC 8k"),
+  deconv_type_plots(cell_deconvolutions_for_plotting_without_cell_numbers,"Glioma_sce", "Glioma sce"),
+  deconv_type_plots(cell_deconvolutions_for_plotting_without_cell_numbers,"Immunostates", "Immunostates"),
+  deconv_type_plots(cell_deconvolutions_for_plotting_without_cell_numbers,"LM22", "LM22"),
+  deconv_type_plots(cell_deconvolutions_for_plotting_without_cell_numbers,"Spatial_decon_tme", "safeTME"),
+  deconv_type_plots(cell_deconvolutions_for_plotting_without_cell_numbers,"TIL10", "TIL10"),
+  widths=c(1,1,1,1,1,1), align="h", nrow =1, ncol=6, common.legend = TRUE, legend = "bottom")
+
+```
+
+```{r}
+pdf(file = "Results/Bootstrapped_graphs/Comparison_between_signature_matrices_with_spatial_decon.pdf", width = 15, height = 10)
+background_of_genes_in_signature_matrices
+density_distribution_of_B_cell_values
+annotate_figure(signature_matrix_comparison_graphs, top = text_grob("Comparison between the signature matrices when total number of cells are known", 
+               color = "black", face = "bold", size = 14))
+annotate_figure(signature_matrix_without_cell_numbers_comparison_graphs, top = text_grob("Comparison between the signature matrices when total number of cells are unknown", 
+               color = "black", face = "bold", size = 14))
+dev.off()
+```
+
+# Stastitical test of Significance
+```{r}
+custom_8k_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="Custom_pbmc8k")
+res_custom_8k= cor.test( custom_8k_test$Predicted_values , custom_8k_test$True_values, method = "kendall")
+
+glioma_sce_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="Glioma_sce")
+res_glioma_sce = cor.test( glioma_sce_test$Predicted_values , glioma_sce_test$True_values, method = "kendall")
+
+immunostates_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="Immunostates")
+res_immunostates= cor.test( immunostates_test$Predicted_values , immunostates_test$True_values, method = "kendall")
+
+lm22_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="LM22")
+res_lm22= cor.test( lm22_test$Predicted_values , lm22_test$True_values, method = "kendall")
+
+tme_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="Spatial_decon_tme")
+res_tme= cor.test( tme_test$Predicted_values , tme_test$True_values, method = "kendall")
+
+til10_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="TIL10")
+res_til10= cor.test( til10_test$Predicted_values , til10_test$True_values, method = "kendall")
+
+```
+
+```{r}
+stat_table= data.frame("Signature_matrix"= c("Custom_pbmc8k","Glioma_sce","Immunostates","LM22","Spatial_decon_tme","TIL10"),
+  "estimates"= c(res_custom_8k$estimate,res_glioma_sce$estimate,res_immunostates$estimate,res_lm22$estimate,res_tme$estimate,res_til10$estimate),
+                          "Pval" = c(res_custom_8k$p.value,res_glioma_sce$p.value,res_immunostates$p.value,res_lm22$p.value,res_tme$p.value,res_til10$p.value) )
+
+stat_table
+```
+
+```{r}
+custom_8k_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="Custom_pbmc8k")
+res_custom_8k= cor.test( custom_8k_test$Predicted_values , custom_8k_test$True_values, method = "pearson")
+
+glioma_sce_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="Glioma_sce")
+res_glioma_sce = cor.test( glioma_sce_test$Predicted_values , glioma_sce_test$True_values, method = "pearson")
+
+immunostates_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="Immunostates")
+res_immunostates= cor.test( immunostates_test$Predicted_values , immunostates_test$True_values, method = "pearson")
+
+lm22_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="LM22")
+res_lm22= cor.test( lm22_test$Predicted_values , lm22_test$True_values, method = "pearson")
+
+tme_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="Spatial_decon_tme")
+res_tme= cor.test( tme_test$Predicted_values , tme_test$True_values, method = "pearson")
+
+til10_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type=="TIL10")
+res_til10= cor.test( til10_test$Predicted_values , til10_test$True_values, method = "pearson")
+```
+```{r}
+stat_table2= data.frame("Signature_matrix"= c("Custom_pbmc8k","Glioma_sce","Immunostates","LM22","Spatial_decon_tme","TIL10"),
+  "estimates"= c(res_custom_8k$estimate,res_glioma_sce$estimate,res_immunostates$estimate,res_lm22$estimate,res_tme$estimate,res_til10$estimate),
+                          "Pval" = c(res_custom_8k$p.value,res_glioma_sce$p.value,res_immunostates$p.value,res_lm22$p.value,res_tme$p.value,res_til10$p.value) )
+
+stat_table2
+```
+
+```{r}
+custom_8k_test= cell_deconvolutions_for_plotting %>% dplyr::filter(deconv_type == "Custom_pbmc8k")
+shapiro.test(custom_8k_test$True_values)
+shapiro.test(custom_8k_test$Predicted_values)
+ggqqplot(custom_8k_test$Predicted_values, ylab = "Predicted_values")
+ggqqplot(custom_8k_test$True_values, ylab = "True_values")
+res_custom_8k= cor.test(custom_8k_test$Predicted_values, custom_8k_test$True_values, method = "kendall")
+```
+
+################## Comparing Deconvolution results in Spatial Decon without inputing cell_numbers ##########################
+```{r}
+
+```
+
